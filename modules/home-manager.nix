@@ -1,0 +1,121 @@
+# Home Manager module for running the Omnara server as a user service.
+#
+# Exposed from the flake as `homeManagerModules.default`. It closes over the
+# flake's `self` only to default `services.omnara.package` to the package this
+# flake builds (so consumers don't have to add the overlay).
+#
+# macOS -> launchd user agent; Linux -> systemd user service.
+self:
+{ config, lib, pkgs, ... }:
+let
+  cfg = config.services.omnara;
+  system = pkgs.stdenv.hostPlatform.system;
+  defaultPackage = self.packages.${system}.omnara or null;
+  binPath = lib.makeBinPath ([ cfg.package ] ++ cfg.path);
+in
+{
+  options.services.omnara = {
+    enable = lib.mkEnableOption "the Omnara server as a user service (runs `omnara serve`)";
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = defaultPackage;
+      defaultText = lib.literalExpression "omnara.packages.\${system}.omnara";
+      description = "The omnara package to run.";
+    };
+
+    command = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "serve" ];
+      example = [ "serve" "--no-tunnel" "--port" "6662" ];
+      description = ''
+        Arguments passed to `omnara`. Defaults to `serve`, the long-running
+        webhook server (which uses a Cloudflare tunnel by default).
+
+        Note: the newer `daemon run-service` command from the upstream
+        `install.sh` only exists in the `releases.omnara.com/latest` standalone
+        binary, not in the pinned release wheel this flake builds. `serve` is
+        the v1.7.0 long-running equivalent.
+      '';
+    };
+
+    environment = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
+      example = { OMNARA_BASE_URL = "https://api.example.com"; };
+      description = ''
+        Extra environment variables for the service.
+
+        Do NOT put secrets such as API keys here: they would be written to the
+        world-readable Nix store. Authenticate once with `omnara --auth` (which
+        stores credentials under ~/.omnara) or inject secrets via a secrets
+        manager.
+      '';
+    };
+
+    path = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [ ];
+      example = lib.literalExpression "[ pkgs.nodejs ]";
+      description = ''
+        Extra packages placed on the service's PATH, e.g. the `claude` CLI
+        needed by the Claude Code agent. `git` and `cloudflared` are already
+        wired in by the package wrapper.
+      '';
+    };
+
+    logFile = lib.mkOption {
+      type = lib.types.str;
+      default = "${config.home.homeDirectory}/.omnara/logs/serve.log";
+      description = "Log file path (used by launchd on macOS). On Linux, logs go to the systemd journal.";
+    };
+  };
+
+  config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.package != null;
+        message = "services.omnara: no omnara package for ${system}; set services.omnara.package explicitly.";
+      }
+    ];
+
+    # macOS: launchd needs the log directory to exist up front.
+    home.activation = lib.mkIf pkgs.stdenv.isDarwin {
+      omnaraLogDir = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+        run mkdir -p $VERBOSE_ARG "$(dirname ${lib.escapeShellArg cfg.logFile})"
+      '';
+    };
+
+    launchd.agents.omnara = lib.mkIf pkgs.stdenv.isDarwin {
+      enable = true;
+      config = {
+        ProgramArguments = [ "${cfg.package}/bin/omnara" ] ++ cfg.command;
+        RunAtLoad = true;
+        KeepAlive = true;
+        StandardOutPath = cfg.logFile;
+        StandardErrorPath = cfg.logFile;
+        WorkingDirectory = config.home.homeDirectory;
+        EnvironmentVariables = cfg.environment // {
+          PATH = "${binPath}:/usr/bin:/bin";
+        };
+      };
+    };
+
+    systemd.user.services.omnara = lib.mkIf pkgs.stdenv.isLinux {
+      Unit = {
+        Description = "Omnara server";
+        After = [ "network-online.target" ];
+        Wants = [ "network-online.target" ];
+      };
+      Install.WantedBy = [ "default.target" ];
+      Service = {
+        ExecStart = "${cfg.package}/bin/omnara ${lib.escapeShellArgs cfg.command}";
+        Restart = "on-failure";
+        RestartSec = 5;
+        Environment =
+          [ "PATH=${binPath}:/run/current-system/sw/bin" ]
+          ++ lib.mapAttrsToList (n: v: "${n}=${v}") cfg.environment;
+      };
+    };
+  };
+}
