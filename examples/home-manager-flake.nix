@@ -8,7 +8,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     # Point this at wherever you host omnara-nix:
-    omnara.url = "github:<you>/omnara-nix";
+    omnara.url = "github:rksm/omnara-nix";
   };
 
   outputs =

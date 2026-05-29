@@ -56,7 +56,7 @@ nix build .#omnara
 ./result/bin/omnara --version        # 0.25.13
 
 # or directly
-nix run github:<you>/omnara-nix -- --version
+nix run github:rksm/omnara-nix -- --version
 ```
 
 Authenticate, then start an agent session in a git repo:
@@ -94,7 +94,7 @@ agent on macOS, a **systemd** user service on Linux).
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     home-manager.url = "github:nix-community/home-manager";
-    omnara.url = "github:<you>/omnara-nix";
+    omnara.url = "github:rksm/omnara-nix";
   };
   # ...
 }
@@ -180,7 +180,7 @@ See [`examples/consumer-flake.nix`](examples/consumer-flake.nix):
 
 ```nix
 {
-  inputs.omnara.url = "github:<you>/omnara-nix";
+  inputs.omnara.url = "github:rksm/omnara-nix";
   # ...
   # add omnara.overlays.default to your nixpkgs overlays,
   # then use pkgs.omnara
