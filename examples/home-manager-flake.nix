@@ -1,5 +1,5 @@
 {
-  description = "Example: a standalone Home Manager config that runs the Omnara server";
+  description = "Example: a standalone Home Manager config that runs the Omnara daemon";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -37,13 +37,13 @@
               stateVersion = "24.11";
             };
 
-            # Run `omnara serve` as a launchd (macOS) / systemd (Linux) user
-            # service that auto-starts on login.
+            # Run `omnara daemon run-service` as a launchd (macOS) / systemd
+            # (Linux) user service that auto-starts on login.
             services.omnara = {
               enable = true;
 
-              # Defaults to [ "serve" ]. Override for a local-only server:
-              # command = [ "serve" "--no-tunnel" "--port" "6662" ];
+              # Defaults to [ "daemon" "run-service" ]. For example:
+              # command = [ "daemon" "run-service" "--sandbox-mode" ];
 
               # Extra tools on the service PATH (git + cloudflared are already
               # provided by the package). E.g. if your agent needs node:

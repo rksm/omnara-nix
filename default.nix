@@ -2,138 +2,139 @@
   lib,
   stdenv,
   fetchurl,
-  python3Packages,
+  unzip,
+  makeWrapper,
   autoPatchelfHook,
-  # Runtime tools placed on omnara's PATH (see makeWrapperArgs below).
+  # Runtime tools placed on omnara's PATH (see postFixup).
   git,
   cloudflared,
 }:
 
 let
-  version = "1.7.0";
+  # The current Omnara CLI is a self-contained, frozen (Node-based) binary
+  # distributed only from releases.omnara.com/latest. There is NO version-pinned
+  # URL upstream -- `/latest` mutates in place -- so the hashes below pin a
+  # specific build by content. When upstream ships a new build the hash will no
+  # longer match (and the old artifact 404s); run ./scripts/update-omnara.sh to
+  # re-pin. See README "Reproducibility caveat".
+  version = "0.25.13";
 
-  # Per-platform wheels from the GitHub release. The omnara wheel is pure
-  # Python (no compiled extension modules); it is only platform-specific
-  # because it bundles a prebuilt `codex` helper binary under
-  # omnara/_bin/codex/<platform>/codex. The cp313 ABI tag therefore requires
-  # building against CPython 3.13 (nixpkgs `python3`).
-  #
-  # No aarch64-linux or musl wheel is published upstream, so those systems are
-  # intentionally unsupported.
-  wheels = {
+  base = "https://releases.omnara.com/latest";
+
+  sources = {
     aarch64-darwin = {
-      file = "omnara-1.7.0-cp313-cp313-macosx_11_0_arm64.whl";
-      hash = "sha256-/z8h2+dXDw+5WMXGQptreriIrCbK/UqRk0lFYL889yM=";
+      url = "${base}/omnara-darwin-arm64.zip";
+      hash = "sha256-d6M/HrOvXB0UQCuQQkjfH+HyMiD681k0GclqFr9qZTo=";
     };
     x86_64-darwin = {
-      file = "omnara-1.7.0-cp313-cp313-macosx_10_13_x86_64.whl";
-      hash = "sha256-QdV6B/bcKdVGaLC7yyo43DIrtVUd53pxZmy7KiUQHjk=";
+      url = "${base}/omnara-darwin-x64.zip";
+      hash = "sha256-BbENndDRtddgONZ5LOvRYQoDgRfRYzzgA/JmemUDxlE=";
     };
     x86_64-linux = {
-      file = "omnara-1.7.0-cp313-cp313-manylinux_2_28_x86_64.whl";
-      hash = "sha256-bVl/SMX/lO9/fV/uB2YMh9kxI5H4z5pi0bmKZzbtvKg=";
+      url = "${base}/omnara-linux-x64";
+      hash = "sha256-8zkIIkeULxH3+Z+Hr2edxd0IIQmvs2lcMw3R0+moGhQ=";
+    };
+    aarch64-linux = {
+      url = "${base}/omnara-linux-arm64";
+      hash = "sha256-4KduBEQw5+k1SAj6HQ3/HWvgYHRzEBEy5nXohh51Wio=";
     };
   };
 
-  wheel =
-    wheels.${stdenv.hostPlatform.system}
-      or (throw "omnara: no upstream wheel for ${stdenv.hostPlatform.system}");
+  source =
+    sources.${stdenv.hostPlatform.system}
+      or (throw "omnara: no upstream artifact for ${stdenv.hostPlatform.system}");
 
-  src = fetchurl {
-    url = "https://github.com/omnara-ai/omnara/releases/download/v${version}/${wheel.file}";
-    inherit (wheel) hash;
-  };
-
-  # claude-code-sdk is a runtime dependency of omnara but is not yet packaged in
-  # nixpkgs. It is pure Python (anyio + mcp), so we wrap its wheel here.
-  claude-code-sdk = python3Packages.buildPythonPackage rec {
-    pname = "claude-code-sdk";
-    version = "0.0.25";
-    format = "wheel";
-
-    src = fetchurl {
-      url = "https://files.pythonhosted.org/packages/f5/41/c934058080f3233bbc95bc9abac5e0191bf336ad5f69a33b5f54a4737e88/claude_code_sdk-${version}-py3-none-any.whl";
-      hash = "sha256-PWpO+VgYLzEdYFB3bSZ12bOWUKLbIhxYKgpRVkctzuM=";
-    };
-
-    propagatedBuildInputs = with python3Packages; [
-      anyio
-      mcp
-    ];
-
-    pythonImportsCheck = [ "claude_code_sdk" ];
-    doCheck = false;
-
-    meta = with lib; {
-      description = "Python SDK for Claude Code";
-      homepage = "https://github.com/anthropics/claude-code-sdk-python";
-      license = licenses.mit;
-    };
-  };
+  src = fetchurl { inherit (source) url hash; };
 in
-python3Packages.buildPythonApplication {
+stdenv.mkDerivation {
   pname = "omnara";
   inherit version src;
-  format = "wheel";
 
-  nativeBuildInputs = lib.optionals stdenv.isLinux [
-    # Patch the bundled `codex` ELF helper to find store libraries on Linux.
-    autoPatchelfHook
-  ];
+  nativeBuildInputs =
+    [ makeWrapper ]
+    ++ lib.optionals stdenv.hostPlatform.isDarwin [ unzip ]
+    # Patch the frozen ELF to use the store's dynamic linker on Linux.
+    ++ lib.optionals stdenv.hostPlatform.isLinux [ autoPatchelfHook ];
 
-  buildInputs = lib.optionals stdenv.isLinux [
+  buildInputs = lib.optionals stdenv.hostPlatform.isLinux [
     stdenv.cc.cc.lib
   ];
 
-  # The bundled `codex` helper is only used for the optional Codex agent; if
-  # autoPatchelf can't resolve every one of its libs, don't fail the whole
-  # build over it.
-  autoPatchelfIgnoreMissingDeps = stdenv.isLinux;
+  dontConfigure = true;
+  dontBuild = true;
 
-  # Stripping would invalidate the code signature of the bundled `codex`
-  # Mach-O on macOS (and is pointless for the rest, which is Python bytecode).
+  # Do not strip: it would invalidate the macOS code signature and serves no
+  # purpose for an already-built, self-contained binary.
   dontStrip = true;
 
-  propagatedBuildInputs = with python3Packages; [
-    requests
-    urllib3
-    aiohttp
-    certifi
-    websocket-client
-    fastmcp
-    fastapi
-    uvicorn
-    pydantic
-    claude-code-sdk
-  ];
+  # The Linux artifact is a bare binary (no archive); the macOS artifact is a
+  # zipped, code-signed .app bundle. fetchurl gives us the file directly.
+  unpackPhase = ''
+    runHook preUnpack
+    case "$src" in
+      *.zip) unzip -q "$src" -d unpacked ;;
+      *)     cp "$src" omnara ;;
+    esac
+    runHook postUnpack
+  '';
 
-  # Tools omnara shells out to at runtime:
-  #   git         - omnara operates inside git repositories
-  #   cloudflared - exposes local agent sessions over a Cloudflare tunnel
-  # (The Codex agent uses the bundled _bin/codex; the Claude Code agent expects
-  #  `claude` to already be on your PATH, which it is in a Claude Code session.)
-  makeWrapperArgs = [
-    "--prefix"
-    "PATH"
-    ":"
-    (lib.makeBinPath [
-      git
-      cloudflared
-    ])
-  ];
+  # Tools omnara shells out to at runtime (wired onto PATH via the wrapper):
+  #   git         - omnara tracks work per git repository/branch
+  #   cloudflared - exposes the daemon/sessions over a Cloudflare tunnel
+  # The Claude Code / Codex agents expect `claude` / `codex` already on PATH.
+  installPhase = ''
+    runHook preInstall
 
-  pythonImportsCheck = [ "omnara" ];
-  doCheck = false;
+    mkdir -p $out/bin $out/libexec
+
+    if [ -f omnara ]; then
+      # Linux: a bare frozen binary (autoPatchelfHook fixes its interpreter).
+      install -Dm755 omnara $out/libexec/omnara
+      real=$out/libexec/omnara
+    else
+      # macOS: keep the WHOLE signed .app bundle intact. The executable's
+      # Developer ID + hardened-runtime signature only validates with its
+      # bundle context (Info.plist, _CodeSignature); extracting the bare
+      # binary makes AMFI SIGKILL it. We must not strip/modify anything inside.
+      app="$(find unpacked -maxdepth 2 -name '*.app' -type d | head -1)"
+      if [ -z "$app" ]; then
+        echo "omnara: no .app bundle found in artifact" >&2
+        find unpacked -maxdepth 2 >&2
+        exit 1
+      fi
+      cp -R "$app" $out/libexec/Omnara.app
+      real=$out/libexec/Omnara.app/Contents/MacOS/omnara
+      chmod +x "$real"
+    fi
+
+    # OMNARA_NO_UPDATE: the binary lives in the read-only Nix store, so its
+    # self-updater can't work -- disable it by default (override by exporting
+    # OMNARA_NO_UPDATE yourself; use Nix to update instead).
+    makeWrapper "$real" $out/bin/omnara \
+      --set-default OMNARA_NO_UPDATE 1 \
+      --prefix PATH : ${lib.makeBinPath [ git cloudflared ]}
+
+    runHook postInstall
+  '';
+
+  # Linux-only: on macOS the Nix build sandbox both restricts the signed binary
+  # and the frozen binary perturbs the .app at first run, so we verify the
+  # macOS build by running it after install instead (see README).
+  doInstallCheck = stdenv.hostPlatform.isLinux;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    export HOME=$(mktemp -d)
+    OMNARA_NO_UPDATE=1 $out/bin/omnara --version
+    runHook postInstallCheck
+  '';
 
   meta = with lib; {
     description = "Omnara CLI/daemon - control and remote-drive AI agent sessions";
-    homepage = "https://github.com/omnara-ai/omnara";
+    homepage = "https://omnara.com";
+    downloadPage = "https://github.com/omnara-ai/omnara";
     license = licenses.asl20;
     mainProgram = "omnara";
-    platforms = builtins.attrNames wheels;
-    sourceProvenance = with sourceTypes; [
-      binaryBytecode # the omnara wheel
-      binaryNativeCode # the bundled codex helper
-    ];
+    platforms = builtins.attrNames sources;
+    sourceProvenance = with sourceTypes; [ binaryNativeCode ];
   };
 }

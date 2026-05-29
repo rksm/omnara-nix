@@ -1,4 +1,4 @@
-# Home Manager module for running the Omnara server as a user service.
+# Home Manager module for running the Omnara daemon as a user service.
 #
 # Exposed from the flake as `homeManagerModules.default`. It closes over the
 # flake's `self` only to default `services.omnara.package` to the package this
@@ -15,7 +15,7 @@ let
 in
 {
   options.services.omnara = {
-    enable = lib.mkEnableOption "the Omnara server as a user service (runs `omnara serve`)";
+    enable = lib.mkEnableOption "the Omnara daemon as a user service (runs `omnara daemon run-service`)";
 
     package = lib.mkOption {
       type = lib.types.package;
@@ -26,16 +26,14 @@ in
 
     command = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ "serve" ];
-      example = [ "serve" "--no-tunnel" "--port" "6662" ];
+      default = [ "daemon" "run-service" ];
+      example = [ "daemon" "run-service" "--sandbox-mode" ];
       description = ''
-        Arguments passed to `omnara`. Defaults to `serve`, the long-running
-        webhook server (which uses a Cloudflare tunnel by default).
-
-        Note: the newer `daemon run-service` command from the upstream
-        `install.sh` only exists in the `releases.omnara.com/latest` standalone
-        binary, not in the pinned release wheel this flake builds. `serve` is
-        the v1.7.0 long-running equivalent.
+        Arguments passed to `omnara`. Defaults to `daemon run-service`, the
+        foreground daemon entry point that launchd/systemd supervises (the same
+        command the upstream installer's service runs). Don't use
+        `daemon start`/`stop` here -- those are user-facing wrappers that manage
+        a separately-launched daemon.
       '';
     };
 
@@ -66,7 +64,7 @@ in
 
     logFile = lib.mkOption {
       type = lib.types.str;
-      default = "${config.home.homeDirectory}/.omnara/logs/serve.log";
+      default = "${config.home.homeDirectory}/.omnara/logs/daemon.log";
       description = "Log file path (used by launchd on macOS). On Linux, logs go to the systemd journal.";
     };
   };
@@ -95,7 +93,7 @@ in
         StandardOutPath = cfg.logFile;
         StandardErrorPath = cfg.logFile;
         WorkingDirectory = config.home.homeDirectory;
-        EnvironmentVariables = cfg.environment // {
+        EnvironmentVariables = { OMNARA_NO_UPDATE = "1"; } // cfg.environment // {
           PATH = "${binPath}:/usr/bin:/bin";
         };
       };
@@ -103,7 +101,7 @@ in
 
     systemd.user.services.omnara = lib.mkIf pkgs.stdenv.isLinux {
       Unit = {
-        Description = "Omnara server";
+        Description = "Omnara daemon";
         After = [ "network-online.target" ];
         Wants = [ "network-online.target" ];
       };
@@ -113,7 +111,8 @@ in
         Restart = "on-failure";
         RestartSec = 5;
         Environment =
-          [ "PATH=${binPath}:/run/current-system/sw/bin" ]
+          # OMNARA_NO_UPDATE first so a user-provided value in `environment` wins.
+          [ "PATH=${binPath}:/run/current-system/sw/bin" "OMNARA_NO_UPDATE=1" ]
           ++ lib.mapAttrsToList (n: v: "${n}=${v}") cfg.environment;
       };
     };

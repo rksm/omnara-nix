@@ -20,7 +20,7 @@
       };
 
       # Home Manager module: `services.omnara.enable = true;` runs the Omnara
-      # server as a launchd (macOS) / systemd (Linux) user service.
+      # daemon as a launchd (macOS) / systemd (Linux) user service.
       homeManagerModules.default = import ./modules/home-manager.nix self;
       homeManagerModules.omnara = self.homeManagerModules.default;
     }

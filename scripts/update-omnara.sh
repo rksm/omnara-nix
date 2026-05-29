@@ -1,81 +1,83 @@
 #!/usr/bin/env bash
-# Update the pinned omnara version + wheel hashes in default.nix from the
-# latest GitHub release that still ships per-platform wheels.
+# Re-pin the Omnara standalone binaries in default.nix from releases.omnara.com.
 #
-# Fails loudly (rather than writing a broken pin) if:
-#   - no newer release exists,
-#   - the release is missing a wheel for any supported platform, or
-#   - the wheels' CPython ABI tag no longer matches `cp313`
-#     (nixpkgs python3 == 3.13; a different tag needs a manual bump).
+# Upstream serves only a mutating `/latest` (no version-stamped URLs), so this
+# script recomputes the content hash of each platform artifact and, if any
+# changed, rewrites default.nix. The version string is discovered by running
+# the Linux x64 binary (there is no version endpoint), so this is meant to run
+# on an x86_64 Linux CI runner.
 #
-# Requires: curl, jq, nix. Emits VERSION / UPDATED to $GITHUB_OUTPUT in CI.
+# Requires: curl, jq, nix, python3. Emits VERSION / UPDATED to $GITHUB_OUTPUT.
 set -euo pipefail
 
-repo="omnara-ai/omnara"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 nixfile="$root/default.nix"
-abi_tag="cp313"
+base="https://releases.omnara.com/latest"
 
-# Each supported nix system -> (unique substring identifying its wheel asset).
-systems=(aarch64-darwin x86_64-darwin x86_64-linux)
-declare -A match=(
-  [aarch64-darwin]="macosx_.*_arm64"
-  [x86_64-darwin]="macosx_.*_x86_64"
-  [x86_64-linux]="manylinux_.*_x86_64"
+systems=(aarch64-darwin x86_64-darwin x86_64-linux aarch64-linux)
+declare -A url=(
+  [aarch64-darwin]="$base/omnara-darwin-arm64.zip"
+  [x86_64-darwin]="$base/omnara-darwin-x64.zip"
+  [x86_64-linux]="$base/omnara-linux-x64"
+  [aarch64-linux]="$base/omnara-linux-arm64"
 )
 
-current="$(sed -n 's/^[[:space:]]*version = "\([0-9.]*\)";.*/\1/p' "$nixfile" | head -1)"
-echo "current pinned version: $current"
+echo "computing current artifact hashes..."
+declare -A newhash
+for s in "${systems[@]}"; do
+  newhash[$s]="$(nix store prefetch-file --json "${url[$s]}" | jq -r '.hash')"
+  echo "  $s  ${newhash[$s]}"
+done
 
-release="$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest")"
-tag="$(jq -r '.tag_name' <<<"$release")"
-version="${tag#v}"
-echo "latest GitHub release: $tag"
+# Compare against the hashes currently pinned in default.nix.
+changed=false
+for s in "${systems[@]}"; do
+  cur="$(python3 - "$nixfile" "$s" <<'PY'
+import re, sys
+text, sysname = open(sys.argv[1]).read(), sys.argv[2]
+m = re.search(rf'\b{re.escape(sysname)} = \{{\s*url = "[^"]*";\s*hash = "([^"]*)";', text)
+print(m.group(1) if m else "")
+PY
+)"
+  [ "$cur" != "${newhash[$s]}" ] && changed=true
+done
 
-if [ "$version" = "$current" ]; then
+if ! $changed; then
   echo "already up to date."
   [ -n "${GITHUB_OUTPUT:-}" ] && echo "UPDATED=false" >>"$GITHUB_OUTPUT"
   exit 0
 fi
 
-assets="$(jq -r '.assets[].name' <<<"$release")"
+echo "artifacts changed; discovering version from the linux-x64 binary..."
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL "${url[x86_64-linux]}" -o "$tmp/omnara"
+chmod +x "$tmp/omnara"
+version="$(OMNARA_NO_UPDATE=1 "$tmp/omnara" --version 2>/dev/null | tr -d '[:space:]' || true)"
+if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+  echo "ERROR: could not determine version from the binary (got: '$version')." >&2
+  echo "Refusing to write a bogus version pin." >&2
+  exit 1
+fi
+echo "new version: $version"
 
-declare -A file hash
-for sys in "${systems[@]}"; do
-  name="$(grep -E "^omnara-${version}-${abi_tag}-${abi_tag}-${match[$sys]}\.whl$" <<<"$assets" | head -1 || true)"
-  if [ -z "$name" ]; then
-    echo "ERROR: release $tag has no ${abi_tag} wheel for $sys (pattern: ${match[$sys]})." >&2
-    echo "Upstream may have stopped publishing wheels, or changed the ABI tag." >&2
-    echo "Available assets:" >&2; echo "$assets" | sed 's/^/  /' >&2
-    exit 1
-  fi
-  url="https://github.com/$repo/releases/download/$tag/$name"
-  echo "fetching hash: $name"
-  h="$(nix store prefetch-file --json "$url" | jq -r '.hash')"
-  file[$sys]="$name"
-  hash[$sys]="$h"
-done
-
-# Rewrite version + each wheel's file/hash deterministically.
 python3 - "$nixfile" "$version" \
-  "${file[aarch64-darwin]}" "${hash[aarch64-darwin]}" \
-  "${file[x86_64-darwin]}"  "${hash[x86_64-darwin]}" \
-  "${file[x86_64-linux]}"   "${hash[x86_64-linux]}" <<'PY'
+  "${newhash[aarch64-darwin]}" "${newhash[x86_64-darwin]}" \
+  "${newhash[x86_64-linux]}" "${newhash[aarch64-linux]}" <<'PY'
 import re, sys
 path, version = sys.argv[1], sys.argv[2]
-vals = {
-    "aarch64-darwin": (sys.argv[3], sys.argv[4]),
-    "x86_64-darwin":  (sys.argv[5], sys.argv[6]),
-    "x86_64-linux":   (sys.argv[7], sys.argv[8]),
+hashes = {
+    "aarch64-darwin": sys.argv[3],
+    "x86_64-darwin":  sys.argv[4],
+    "x86_64-linux":   sys.argv[5],
+    "aarch64-linux":  sys.argv[6],
 }
 s = open(path).read()
-# version (first occurrence only)
-s = re.sub(r'(\n  version = ")[0-9.]+(";)', rf'\g<1>{version}\g<2>', s, count=1)
-# per-system file/hash inside the wheels attrset
-for sysname, (fn, h) in vals.items():
+s = re.sub(r'(\n  version = ")[^"]*(";)', rf'\g<1>{version}\g<2>', s, count=1)
+for sysname, h in hashes.items():
     s = re.sub(
-        rf'(\b{re.escape(sysname)} = \{{\s*\n\s*file = ")[^"]*(";\s*\n\s*hash = ")[^"]*(";)',
-        rf'\g<1>{fn}\g<2>{h}\g<3>',
+        rf'(\b{re.escape(sysname)} = \{{\s*\n\s*url = "[^"]*";\s*\n\s*hash = ")[^"]*(";)',
+        rf'\g<1>{h}\g<2>',
         s,
     )
 open(path, "w").write(s)
