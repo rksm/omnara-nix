@@ -17,26 +17,26 @@ let
   # specific build by content. When upstream ships a new build the hash will no
   # longer match (and the old artifact 404s); run ./scripts/update-omnara.sh to
   # re-pin. See README "Reproducibility caveat".
-  version = "0.25.15";
+  version = "0.25.16";
 
   base = "https://releases.omnara.com/latest";
 
   sources = {
     aarch64-darwin = {
       url = "${base}/omnara-darwin-arm64.zip";
-      hash = "sha256-Qb2tvkAUO4jtxhXw6WOBtx4XNg0Pdx/kh19kKt3Wnrg=";
+      hash = "sha256-TEGBnATGRicV5Te2dEKYolWn/MRCm0e1q/c6P/EZiCY=";
     };
     x86_64-darwin = {
       url = "${base}/omnara-darwin-x64.zip";
-      hash = "sha256-/AaFaZ1R8QHWvQBOxK2yseGIcNT0FUP6cMlGSXSiqPI=";
+      hash = "sha256-UucenwC8Ne6PsP1BanVzZTlXGYdp8p9MQY1bJop6MBg=";
     };
     x86_64-linux = {
       url = "${base}/omnara-linux-x64";
-      hash = "sha256-uvyv5uQ7TDQQNj8YYcQtBQstNs7v7RufqHn/YmfkdoI=";
+      hash = "sha256-5++nF5wNoXcPltZ0Q5tV/YZP7LTwXbtbOKz8a68Rs2g=";
     };
     aarch64-linux = {
       url = "${base}/omnara-linux-arm64";
-      hash = "sha256-jXr+FjtAbi3XDo5iLjafj/DN1++g1iGPfZwesJHgwjI=";
+      hash = "sha256-8D84klCIs9PQhEaDdq17zaBRIiAOZ9g6GZbeYaXDeLk=";
     };
   };
 
